@@ -132,6 +132,21 @@ fn serialize_uint<
             if b.is_empty() {
                 return serializer.serialize_str("0x0");
             }
+
+            // OPT: Allocation free method.
+            let mut result = String::with_capacity(2 * b.len() + 2);
+            result.push_str("0x");
+
+            // we know it is not empty at this point, because we checked above
+            // strip the leading zero from the first byte
+            let first_byte = b[0];
+            write!(result, "{first_byte:x}").unwrap();
+
+            for byte in &b[1..] {
+                write!(result, "{byte:02x}").unwrap();
+            }
+
+            return serializer.serialize_str(&result);
         }
 
         // OPT: Allocation free method.
@@ -169,6 +184,7 @@ mod tests {
             const LIMBS: usize = nlimbs(BITS);
             proptest!(|(value: Uint<BITS, LIMBS>)| {
                 let serialized = serde_json::to_string(&value).unwrap();
+                println!("serialized: {}", serialized);
                 let deserialized = serde_json::from_str(&serialized).unwrap();
                 assert_eq!(value, deserialized);
             });
