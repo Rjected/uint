@@ -31,17 +31,32 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
     /// Returns zero if the modulus is zero.
     #[inline]
     #[must_use]
-    pub fn add_mod(self, rhs: Self, modulus: Self) -> Self {
-        // Reduce inputs
-        let lhs = self.reduce_mod(modulus);
-        let rhs = rhs.reduce_mod(modulus);
-
-        // Compute the sum and conditionally subtract modulus once.
-        let (mut result, overflow) = lhs.overflowing_add(rhs);
-        if overflow || result >= modulus {
-            result -= modulus;
+    pub fn add_mod(self, rhs: Self, mut modulus: Self) -> Self {
+        if modulus.is_zero() {
+            return Self::ZERO
         }
-        result
+
+        // do overflowing add, then check if we should divrem
+        let (result, overflow) = self.overflowing_add(rhs);
+        if overflow {
+            // Allocate at least `nlimbs(2 * BITS)` limbs to store the product. This array
+            // casting is a workaround for `generic_const_exprs` not being stable.
+            let mut dividend = [[0u64; 2]; LIMBS];
+            let dividend_len = crate::nlimbs(2 * BITS);
+            debug_assert!(2 * LIMBS >= dividend_len);
+            // SAFETY: `[[u64; 2]; LIMBS] == [u64; 2 * LIMBS] >= [u64; nlimbs(2 * BITS)]`.
+            let dividend = unsafe {
+                core::slice::from_raw_parts_mut(dividend.as_mut_ptr().cast::<u64>(), dividend_len)
+            };
+
+            // Compute modulus using `div_rem`.
+            // This stores the remainder in the divisor, `modulus`.
+            algorithms::div(dividend, &mut modulus.limbs);
+
+            modulus
+        } else {
+            result.reduce_mod(modulus)
+        }
     }
 
     /// Compute $\mod{\mathtt{self} ⋅ \mathtt{rhs}}_{\mathtt{modulus}}$.
