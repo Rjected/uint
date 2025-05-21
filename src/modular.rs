@@ -31,31 +31,105 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
     /// Returns zero if the modulus is zero.
     #[inline]
     #[must_use]
-    pub fn add_mod(self, rhs: Self, mut modulus: Self) -> Self {
+    pub fn add_mod(mut self, mut rhs: Self, mut modulus: Self) -> Self {
         if modulus.is_zero() {
-            return Self::ZERO
+            return Self::ZERO;
         }
 
-        // do overflowing add, then check if we should divrem
-        let (result, overflow) = self.overflowing_add(rhs);
-        if overflow {
-            // Allocate at least `nlimbs(2 * BITS)` limbs to store the product. This array
-            // casting is a workaround for `generic_const_exprs` not being stable.
-            let mut dividend = [[0u64; 2]; LIMBS];
-            let dividend_len = crate::nlimbs(2 * BITS);
-            debug_assert!(2 * LIMBS >= dividend_len);
-            // SAFETY: `[[u64; 2]; LIMBS] == [u64; 2 * LIMBS] >= [u64; nlimbs(2 * BITS)]`.
-            let dividend = unsafe {
-                core::slice::from_raw_parts_mut(dividend.as_mut_ptr().cast::<u64>(), dividend_len)
-            };
+        // TODO: why is this faster for 64 bit nums?
+        if self.bit_len() <= 64 {
+            // Reduce inputs
+            let lhs = self.reduce_mod(modulus);
+            let rhs = rhs.reduce_mod(modulus);
 
-            // Compute modulus using `div_rem`.
-            // This stores the remainder in the divisor, `modulus`.
-            algorithms::div(dividend, &mut modulus.limbs);
+            // Compute the sum and conditionally subtract modulus once.
+            let (mut result, overflow) = lhs.overflowing_add(rhs);
+            if overflow || result >= modulus {
+                result -= modulus;
+            }
 
-            modulus
+            return result;
+        }
+
+        let last_modulus_limb = modulus.limbs[LIMBS - 1];
+        let last_self_limb = self.limbs[LIMBS - 1];
+        let last_rhs_limb = rhs.limbs[LIMBS - 1];
+
+        // Condition for the path without divisions:
+        //
+        // The modulus must have bits in all limbs (last_modulus_limb != 0), and
+        // self/rhs must be within 1 limb of the modulus, ie not much larger.
+        //
+        // This path avoids divisions caused by div or reduce_mod.
+        //
+        // This happens often when the lhs and rhs are already reduced.
+        if last_modulus_limb != 0
+            && last_modulus_limb > last_self_limb
+            && last_modulus_limb > last_rhs_limb
+        {
+            // It's a fast path for when the modulus is large.
+            // The core idea is:
+            // 1. Reduce self and rhs by the modulus by subtracting. If we wrapped, simply
+            //    ignore the wrapped value.
+            // 2. Compute sum = self + rhs.
+            // 3. Reduce modulus by subtracting the modulus. Return the result depending on
+            //    when we wrapped.
+
+            // if greater than modulus, subtract modulus
+            let (s_val, overflow) = self.overflowing_sub(modulus);
+
+            // If we didn't wrap, we can just use the value.
+            if !overflow {
+                self = s_val;
+            }
+
+            let (r_val, overflow) = rhs.overflowing_sub(modulus);
+
+            // If we didn't wrap, we can just use the value.
+            if !overflow {
+                rhs = r_val;
+            }
+
+            // Now self and rhs are reduced w.r.t the modulus. Add them together.
+            let (result, overflow_final_add) = self.overflowing_add(rhs);
+
+            // Now subtract the modulus. If we overflowed in this step, it means we were
+            // already reduced w.r.t the modulus.
+            let (final_sub_result, overflow_sub) = result.overflowing_sub(modulus);
+
+            // If we did not overflow the final addition, but we did overflow the final
+            // subtraction, it means we were already reduced when subtracting and can ignore
+            // the final subtraction result.
+            if overflow_sub && !overflow_final_add {
+                result
+            } else {
+                final_sub_result
+            }
         } else {
-            result.reduce_mod(modulus)
+            // do overflowing add, then check if we should divrem
+            let (result, overflow) = self.overflowing_add(rhs);
+            if overflow {
+                // Allocate at least `nlimbs(2 * BITS)` limbs to store the product. This array
+                // casting is a workaround for `generic_const_exprs` not being stable.
+                let mut dividend = [[0u64; 2]; LIMBS];
+                let dividend_len = crate::nlimbs(2 * BITS);
+                debug_assert!(2 * LIMBS >= dividend_len);
+                // SAFETY: `[[u64; 2]; LIMBS] == [u64; 2 * LIMBS] >= [u64; nlimbs(2 * BITS)]`.
+                let dividend = unsafe {
+                    core::slice::from_raw_parts_mut(
+                        dividend.as_mut_ptr().cast::<u64>(),
+                        dividend_len,
+                    )
+                };
+
+                // Compute modulus using `div_rem`.
+                // This stores the remainder in the divisor, `modulus`.
+                algorithms::div(dividend, &mut modulus.limbs);
+
+                modulus
+            } else {
+                result.reduce_mod(modulus)
+            }
         }
     }
 
