@@ -31,7 +31,7 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
     /// Returns zero if the modulus is zero.
     #[inline]
     #[must_use]
-    pub fn add_mod(mut self, rhs: Self, mut modulus: Self) -> Self {
+    pub fn add_mod(mut self, mut rhs: Self, mut modulus: Self) -> Self {
         if modulus.is_zero() {
             return Self::ZERO;
         }
@@ -45,7 +45,63 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
             return self;
         }
 
-        // do overflowing add, then check if we should divrem
+        let last_modulus_limb = modulus.limbs[LIMBS - 1];
+        let last_self_limb = self.limbs[LIMBS - 1];
+        let last_rhs_limb = rhs.limbs[LIMBS - 1];
+
+        // Condition for the path without divisions:
+        //
+        // The modulus must have bits in all limbs (last_modulus_limb != 0), and
+        // self/rhs must be within 1 limb of the modulus, ie not much larger.
+        //
+        // This path avoids divisions caused by div or reduce_mod.
+        //
+        // This happens often when the lhs and rhs are already reduced.
+        if last_modulus_limb != 0
+            && last_modulus_limb > last_self_limb
+            && last_modulus_limb > last_rhs_limb
+        {
+            // It's a fast path for when the modulus is large.
+            // The core idea is:
+            // 1. Reduce self and rhs by the modulus by subtracting. If we wrapped, simply
+            //    ignore the wrapped value.
+            // 2. Compute sum = self + rhs.
+            // 3. Reduce modulus by subtracting the modulus. Return the result depending on
+            //    when we wrapped.
+
+            // if greater than modulus, subtract modulus
+            let (s_val, overflow) = self.overflowing_sub(modulus);
+
+            // If we didn't wrap, we can just use the value.
+            if !overflow {
+                self = s_val;
+            }
+
+            let (r_val, overflow) = rhs.overflowing_sub(modulus);
+
+            // If we didn't wrap, we can just use the value.
+            if !overflow {
+                rhs = r_val;
+            }
+
+            // Now self and rhs are reduced w.r.t the modulus. Add them together.
+            let (result, overflow_final_add) = self.overflowing_add(rhs);
+
+            // Now subtract the modulus. If we overflowed in this step, it means we were
+            // already reduced w.r.t the modulus.
+            let (final_sub_result, overflow_sub) = result.overflowing_sub(modulus);
+
+            // If we did not overflow the final addition, but we did overflow the final
+            // subtraction, it means we were already reduced when subtracting and can ignore
+            // the final subtraction result.
+            if overflow_sub && !overflow_final_add {
+                return result;
+            } else {
+                return final_sub_result;
+            }
+        }
+
+        // Do overflowing add, then check if we should divrem
         let (result, overflow) = self.overflowing_add(rhs);
         if overflow {
             // Allocate at least `nlimbs(2 * BITS)` limbs to store the numerator. This array
