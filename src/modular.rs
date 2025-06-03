@@ -261,7 +261,10 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
         // Convert base to Montgomery form by computing base * R mod modulus
         // where R = 2^(64 * LIMBS)
         let base_reduced = self % modulus;
-        let r_mod = Self::from(2).pow_mod(Self::from(64 * LIMBS), modulus);
+        
+        // Compute R mod modulus efficiently using repeated doubling
+        // This is much faster than using pow_mod for large powers of 2
+        let r_mod = compute_r_mod::<BITS, LIMBS>(modulus);
         let base_mont = base_reduced.mul_mod(r_mod, modulus);
 
         // Montgomery representation of 1 is R mod modulus
@@ -287,6 +290,56 @@ impl<const BITS: usize, const LIMBS: usize> Uint<BITS, LIMBS> {
         // result_mont * 1 * R^(-1) = result
         result.mul_redc(Self::ONE, modulus, inv)
     }
+}
+
+/// Compute R mod modulus where R = 2^(64 * LIMBS)
+/// This is used for converting to Montgomery form
+#[inline]
+fn compute_r_mod<const BITS: usize, const LIMBS: usize>(
+    modulus: Uint<BITS, LIMBS>,
+) -> Uint<BITS, LIMBS> {
+    if LIMBS == 1 {
+        // For single limb, R = 2^64, so R mod modulus is (2^64) % modulus
+        // We can compute this efficiently
+        if modulus.as_limbs()[0] == 1 {
+            return Uint::ZERO;
+        }
+        // For single limb, we can use a more direct computation
+        let r = (1_u128 << 64) % (modulus.as_limbs()[0] as u128);
+        return Uint::from(r as u64);
+    }
+    
+    // For larger sizes, use repeated doubling which is O(log R) = O(64 * LIMBS)
+    let target_bits = 64 * LIMBS;
+    
+    // Use a more efficient approach: compute 2^k for increasing k
+    // by squaring, then complete with doubling
+    let mut k = 0;
+    let mut power_of_two = Uint::<BITS, LIMBS>::ONE;
+    
+    // First, use squaring to quickly reach large powers of 2
+    while k < target_bits {
+        if k == 0 {
+            power_of_two = Uint::from(2);
+            k = 1;
+        } else if k * 2 <= target_bits {
+            // Square to get 2^(2k)
+            power_of_two = power_of_two.mul_mod(power_of_two, modulus);
+            k *= 2;
+        } else {
+            // We're close, use doubling for the remainder
+            break;
+        }
+    }
+    
+    // Complete with doubling for the remaining bits
+    let mut r = power_of_two;
+    while k < target_bits {
+        r = r.add_mod(r, modulus); // Double the value (same as multiply by 2)
+        k += 1;
+    }
+    
+    r
 }
 
 #[cfg(test)]
