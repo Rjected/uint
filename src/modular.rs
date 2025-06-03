@@ -552,6 +552,32 @@ mod tests {
     }
 
     #[test]
+    fn test_compute_r_mod() {
+        use crate::aliases::{U128, U256};
+
+        // Test single limb case
+        let m = U64::from(13);
+        let r = compute_r_mod::<64, 1>(m);
+        // R = 2^64 mod 13
+        // 2^64 = 18446744073709551616
+        // 18446744073709551616 % 13 = 3
+        assert_eq!(r, U64::from(3));
+
+        // Test multi-limb case
+        let m = U128::from(119);
+        let r = compute_r_mod::<128, 2>(m);
+        // R = 2^128 mod 119
+        let expected = U128::from(2).pow_mod(U128::from(128), m);
+        assert_eq!(r, expected);
+
+        // Test larger case
+        let m = U256::from(65537); // Fermat prime F4
+        let r = compute_r_mod::<256, 4>(m);
+        let expected = U256::from(2).pow_mod(U256::from(256), m);
+        assert_eq!(r, expected);
+    }
+
+    #[test]
     fn test_pow_mod_redc_known_values() {
         use crate::aliases::{U128, U256};
 
